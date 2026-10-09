@@ -33,15 +33,43 @@ endif()
 
 # FLTK is only needed when building one of its GUI executables.
 if(NSM_PROXY OR NSM_LEGACY_GUI)
-    find_package(FLTK 1.4 CONFIG REQUIRED)
+    find_package(FLTK 1.4 CONFIG)
+
+    # FLTK 1.4 provides namespaced imported targets.
+    if(TARGET fltk::fltk)
+        set(PROJECT_FLTK_TARGET fltk::fltk)
+
+        if(TARGET fltk::images)
+            set(PROJECT_FLTK_IMAGES_TARGET fltk::images)
+        endif()
+    else()
+        # FLTK 1.3: use CMake's FindFLTK module variables.
+        find_package(FLTK REQUIRED)
+        add_library(project_fltk INTERFACE)
+        target_include_directories(project_fltk INTERFACE ${FLTK_INCLUDE_DIR})
+        target_link_libraries(project_fltk INTERFACE ${FLTK_LIBRARIES})
+        set(PROJECT_FLTK_TARGET project_fltk)
+
+        if(FLTK_IMAGES_LIBRARY)
+            add_library(project_fltk_images INTERFACE)
+            target_include_directories(project_fltk_images INTERFACE ${FLTK_INCLUDE_DIR})
+            target_link_libraries(project_fltk_images INTERFACE
+                "${FLTK_IMAGES_LIBRARY}"
+                ${FLTK_LIBRARIES}
+            )
+            set(PROJECT_FLTK_IMAGES_TARGET project_fltk_images)
+        endif()
+    endif()
 endif()
 
 if(NSM_PROXY)
     find_program(FLUID_EXECUTABLE fluid REQUIRED)
-    if(NOT TARGET fltk::images)
-        message(FATAL_ERROR "FLTK 1.4 was found, but its fltk::images target is unavailable")
-    endif()
 endif()
+
+if(NSM_LEGACY_GUI AND NOT PROJECT_FLTK_IMAGES_TARGET)
+    message(FATAL_ERROR "The legacy GUI requires the FLTK images library")
+endif()
+
 
 add_executable(nsmd
     src/nsmd.cpp
@@ -115,7 +143,7 @@ if(NSM_PROXY)
     )
 
     target_link_libraries(nsm-proxy-gui PRIVATE
-        fltk::fltk
+        ${PROJECT_FLTK_TARGET}
         PkgConfig::LIBLO
         Threads::Threads
     )
@@ -147,8 +175,8 @@ if(NSM_LEGACY_GUI)
         src/FL/Fl_Scalepack.C
     )
     target_link_libraries(nsm-legacy-gui PRIVATE
-        fltk::fltk
-        fltk::images
+        ${PROJECT_FLTK_IMAGES_TARGET}
+        ${PROJECT_FLTK_TARGET}
         PkgConfig::LIBLO
         Threads::Threads
     )
