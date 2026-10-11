@@ -6,7 +6,7 @@
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.5.1...3.31.1)
 
 # Keep the version on its own line for automatic updates.
 project(new-session-manager
