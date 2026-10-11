@@ -16,7 +16,6 @@ project(new-session-manager
 )
 
 include(GNUInstallDirs)
-include(CTest)
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
 
