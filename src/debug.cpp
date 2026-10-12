@@ -26,7 +26,32 @@
 #include <stdio.h>
 #include <stdarg.h>
 
-extern char * program_invocation_short_name;
+#if defined(__GLIBC__)
+extern char *program_invocation_short_name;
+static inline const char *get_program_short_name()
+{
+    return program_invocation_short_name;
+}
+#else
+static const char *g_program_short_name = nullptr;
+
+void debug_set_program_name(const char *argv0)
+{
+    if (!argv0 || !*argv0)
+    {
+        g_program_short_name = nullptr;
+        return;
+    }
+
+    const char *slash = strrchr(argv0, '/');
+    g_program_short_name = slash ? slash + 1 : argv0;
+}
+
+static inline const char *get_program_short_name()
+{
+    return g_program_short_name;
+}
+#endif
 
 bool quietMessages = false;
 
@@ -43,7 +68,7 @@ warnf ( warning_t level,
         "assertion", ""
     };
 
-        module = program_invocation_short_name;
+        module = get_program_short_name();
 
     if ( module )
         fprintf( stderr, "[%s] ", module );

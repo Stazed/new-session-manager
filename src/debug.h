@@ -85,6 +85,10 @@
     #define __FUNCTION__ NULL
 #endif
 
+#if !defined(__GLIBC__)
+void debug_set_program_name(const char *argv0);
+#endif
+
 extern bool quietMessages;
 
 typedef enum {
