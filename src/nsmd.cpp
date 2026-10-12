@@ -36,7 +36,11 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <signal.h>
+#ifdef __FreeBSD__
+#include <sys/event.h>
+#else
 #include <sys/signalfd.h>
+#endif
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -419,6 +423,28 @@ void handle_sigchld ( )
             handle_client_process_death( pid );
         }
     }
+}
+
+static void
+check_sigchld ( void )
+{
+#ifdef __FreeBSD__
+    struct kevent event;
+    struct timespec timeout = { 0, 0 };
+
+    int n = kevent(signal_fd, NULL, 0, &event, 1, &timeout);
+    if (n > 0 && event.filter == EVFILT_SIGNAL &&
+        event.ident == SIGCHLD)
+        handle_sigchld();
+    else if (n == -1 && errno != EINTR)
+        perror("kevent");
+#else
+    struct signalfd_siginfo fdsi;
+    ssize_t s = read(signal_fd, &fdsi, sizeof(fdsi));
+
+    if (s == sizeof(fdsi) && fdsi.ssi_signo == SIGCHLD)
+        handle_sigchld();
+#endif
 }
 
 
@@ -1106,8 +1132,6 @@ dumb_clients_are_alive ( )
 void
 wait_for_dumb_clients_to_die ( )
 {
-    struct signalfd_siginfo fdsi;
-
     GUIMSG( "Waiting for any dumb clients to die." );
 
     for ( int i = 0; i < 6; i++ )
@@ -1115,13 +1139,7 @@ wait_for_dumb_clients_to_die ( )
         if ( ! dumb_clients_are_alive() )
             break;
 
-        ssize_t s = read(signal_fd, &fdsi, sizeof(struct signalfd_siginfo));
-
-        if (s == sizeof(struct signalfd_siginfo))
-        {
-            if (fdsi.ssi_signo == SIGCHLD)
-                handle_sigchld();
-        }
+        check_sigchld();
 
         usleep( 50000 );
     }
@@ -1156,8 +1174,6 @@ killed_clients_are_alive ( )
 void
 wait_for_killed_clients_to_die ( )
 {
-    struct signalfd_siginfo fdsi;
-
     MESSAGE( "Waiting 30 seconds for killed clients to die." );
     for ( int i = 0; i < 30; i++ )
     {
@@ -1167,13 +1183,7 @@ wait_for_killed_clients_to_die ( )
             return;
         }
 
-        ssize_t s = read(signal_fd, &fdsi, sizeof(struct signalfd_siginfo));
-
-        if (s == sizeof(struct signalfd_siginfo))
-        {
-            if (fdsi.ssi_signo == SIGCHLD)
-                handle_sigchld();
-        }
+        check_sigchld();
 
         purge_dead_clients();
 
@@ -1444,23 +1454,63 @@ load_session_file ( const char * path )
     std::list<Client*> new_clients;
 
     {
-        char * client_name = NULL;
-        char * client_executable = NULL;
-        char * client_id = NULL;
+        char *line = NULL;
+        size_t line_capacity = 0;
 
-        // load the client list
-        while ( fscanf( fp, "%m[^:]:%m[^:]:%m[^:\n]\n", &client_name, &client_executable, &client_id ) > 0 )
+        // Load the client list one record per line.
+        while ( getline(&line, &line_capacity, fp) != -1 )
         {
+            size_t length = strlen(line);
+            if (length > 0 && line[length - 1] == '\n')
+                line[--length] = '\0';
+            if (length > 0 && line[length - 1] == '\r')
+                line[--length] = '\0';
+
+            char *first_colon = strchr(line, ':');
+            if (first_colon == NULL)
+                continue;
+            *first_colon = '\0';
+
+            char *second_colon = strchr(first_colon + 1, ':');
+            if (second_colon == NULL)
+                continue;
+            *second_colon = '\0';
+
+            char *client_id = second_colon + 1;
+
+            // Reject empty fields or an unexpected extra colon.
+            if (line[0] == '\0' ||
+                first_colon[1] == '\0' ||
+                client_id[0] == '\0' ||
+                strchr(client_id, ':') != NULL)
+                continue;
+
+            char *client_name = strdup(line);
+            char *client_executable = strdup(first_colon + 1);
+            char *client_id_copy = strdup(client_id);
+
+            if (client_name == NULL ||
+                client_executable == NULL ||
+                client_id_copy == NULL)
+            {
+                free(client_name);
+                free(client_executable);
+                free(client_id_copy);
+                perror("strdup");
+                break;
+            }
+
             Client *c = new Client();
 
             c->name = client_name;
             c->executable_path = client_executable;
-            c->client_id =  client_id;
-
+            c->client_id = client_id_copy;
             asprintf( &c->name_with_id, "%s.%s", c->name, c->client_id );
 
             new_clients.push_back( c );
         }
+
+        free(line);
     }
 
     fclose(fp);
@@ -1815,8 +1865,15 @@ OSC_HANDLER( new )
     return 0;
 }
 
+#ifdef __FreeBSD__
+int
+fts_comparer_to_process_files_before_dirs(
+    const FTSENT * const *first,
+    const FTSENT * const *second)
+#else
 int
 fts_comparer_to_process_files_before_dirs( const FTSENT ** first, const FTSENT ** second )
+#endif
 {
     /*
        The argument compar() specifies a user-defined function which may
@@ -2592,15 +2649,7 @@ OSC_HANDLER( null )
 static void
 wait ( long timeout )
 {
-    struct signalfd_siginfo fdsi;
-
-    ssize_t s = read(signal_fd, &fdsi, sizeof(struct signalfd_siginfo));
-
-    if (s == sizeof(struct signalfd_siginfo))
-    {
-        if (fdsi.ssi_signo == SIGCHLD)
-                handle_sigchld();
-    }
+    check_sigchld();
 
     osc_server->wait( timeout );
 
@@ -2635,7 +2684,31 @@ int main(int argc, char *argv[])
     sigemptyset( &mask );
     sigaddset( &mask, SIGCHLD );
     sigprocmask(SIG_BLOCK, &mask, NULL );
-    signal_fd = signalfd( -1, &mask, SFD_NONBLOCK );
+
+#ifdef __FreeBSD__
+    signal_fd = kqueue();
+    if (signal_fd == -1)
+    {
+        perror("kqueue");
+        return 1;
+    }
+
+    struct kevent change;
+    EV_SET(&change, SIGCHLD, EVFILT_SIGNAL, EV_ADD | EV_ENABLE, 0, 0, NULL);
+    if (kevent(signal_fd, &change, 1, NULL, 0, NULL) == -1)
+    {
+        perror("kevent register SIGCHLD");
+        close(signal_fd);
+        return 1;
+    }
+#else
+     signal_fd = signalfd( -1, &mask, SFD_NONBLOCK );
+    if (signal_fd == -1)
+    {
+        perror("signalfd");
+        return 1;
+    }
+#endif
 
     /* generate random seed for client ids */
     {
