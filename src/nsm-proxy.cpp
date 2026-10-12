@@ -29,6 +29,7 @@
 #include "debug.h"
 
 #include <lo/lo.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -37,7 +38,11 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#ifdef __FreeBSD__
+#include <sys/event.h>
+#else
 #include <sys/signalfd.h>
+#endif
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <getopt.h>
@@ -244,46 +249,100 @@ public:
 
             return true;
         }
+        
 
-    bool restore ( const char *path )
-        {
-            FILE *fp = fopen( path, "r" );
-            if ( ! fp )
-            {
-                WARNING( "Error opening file for restore: %s", strerror( errno ) );
-                return false;
-            }
+     bool restore ( const char *path )
+         {
+             FILE *fp = fopen( path, "r" );
+             if ( ! fp )
+             {
+                 WARNING( "Error opening file for restore: %s", strerror( errno ) );
+                 return false;
+             }
 
-            char *name;
-            char *value;
+             char *line = NULL;
+             size_t line_capacity = 0;
+             ssize_t line_length;
 
-            MESSAGE( "Loading file config \"%s\"", path );
+             MESSAGE( "Loading file config \"%s\"", path );
 
-            while ( 2 == fscanf( fp, "%m[^\n]\n\t%m[^\n]\n", &name, &value ) )
-            {
+             while ( ( line_length = getline( &line, &line_capacity, fp ) ) != -1 )
+             {
+                if ( line_length > 0 && line[line_length - 1] == '\n' )
+                    line[--line_length] = '\0';
+                if ( line_length > 0 && line[line_length - 1] == '\r' )
+                    line[--line_length] = '\0';
 
+                char *name_start = line;
+                while ( isspace( (unsigned char)*name_start ) )
+                    ++name_start;
+                if ( *name_start == '\0' )
+                    continue;
+
+                char *name = strdup( name_start );
+                if ( name == NULL )
+                {
+                    perror( "strdup" );
+                    break;
+                }
+
+                char *value_start = NULL;
+                while ( ( line_length = getline( &line, &line_capacity, fp ) ) != -1 )
+                {
+                    if ( line_length > 0 && line[line_length - 1] == '\n' )
+                        line[--line_length] = '\0';
+                    if ( line_length > 0 && line[line_length - 1] == '\r' )
+                        line[--line_length] = '\0';
+
+                    value_start = line;
+                    while ( isspace( (unsigned char)*value_start ) )
+                        ++value_start;
+
+                    if ( *value_start != '\0' )
+                        break;
+                }
+
+                if ( line_length == -1 )
+                {
+                    WARNING( "Missing value for option \"%s\"", name );
+                    free( name );
+                    break;
+                }
+
+                char *value = strdup( value_start );
+                if ( value == NULL )
+                {
+                    perror( "strdup" );
+                    free( name );
+                    break;
+                }
                 MESSAGE( "%s=%s", name, value );
-
                 if ( !strcmp( name, "executable" ) )
+                {
                     _executable = value;
+                    value = NULL;
+                }
                 else if (!strcmp( name, "arguments" ) )
+                {
                     _arguments = value;
+                    value = NULL;
+                }
                 else if (!strcmp( name, "config file" ) )
+                {
                     _config_file = value;
+                    value = NULL;
+                }
                 else if ( !strcmp( name, "save signal" ) )
                 {
                     _save_signal = atoi( value );
-                    free( value );
                 }
                 else if ( !strcmp( name, "stop signal" ) )
                 {
                     _stop_signal = atoi( value );
-                    free( value );
                 }
                 else if ( !strcmp( name, "label" ) )
                 {
                     label( value );
-                    free( value );
                 }
                 else
                 {
@@ -291,14 +350,17 @@ public:
                 }
 
                 free( name );
+                free( value );
             }
 
+            free( line );
             fclose( fp );
 
             start();
 
             return true;
         }
+
 
     void update ( lo_address to )
         {
@@ -663,6 +725,10 @@ void handle_sigchld ( )
         int status;
         pid_t pid = waitpid(-1, &status, WNOHANG);
 
+        if (pid == -1 && errno == EINTR)
+            continue;
+
+
         if (pid <= 0)
             break;
 
@@ -724,7 +790,30 @@ main ( int argc, char **argv )
 
     sigprocmask(SIG_BLOCK, &mask, NULL );
 
-    signal_fd = signalfd( -1, &mask, SFD_NONBLOCK );
+#ifdef __FreeBSD__
+    signal_fd = kqueue();
+    if (signal_fd == -1)
+    {
+        perror("kqueue");
+        return 1;
+    }
+
+    struct kevent change;
+    EV_SET(&change, SIGCHLD, EVFILT_SIGNAL, EV_ADD | EV_ENABLE, 0, 0, NULL);
+    if (kevent(signal_fd, &change, 1, NULL, 0, NULL) == -1)
+    {
+        perror("kevent register SIGCHLD");
+        close(signal_fd);
+        return 1;
+    }
+#else
+     signal_fd = signalfd( -1, &mask, SFD_NONBLOCK );
+    if (signal_fd == -1)
+    {
+        perror("signalfd");
+        return 1;
+    }
+#endif
 
     //Command line parameters
     static struct option long_options[] =
@@ -776,12 +865,28 @@ main ( int argc, char **argv )
         exit(1);
     }
 
-
+#ifndef __FreeBSD__
     struct signalfd_siginfo fdsi;
+#endif
 
     /* listen for sigchld signals and process OSC messages forever */
     for ( ;; )
     {
+#ifdef __FreeBSD__
+        struct kevent event;
+        struct timespec timeout = { 0, 0 };
+        int n = kevent(signal_fd, NULL, 0, &event, 1, &timeout);
+
+        if (n == -1 && errno != EINTR)
+        {
+            perror("kevent");
+            return 1;
+        }
+
+        if (n > 0 && event.filter == EVFILT_SIGNAL &&
+            event.ident == SIGCHLD)
+            handle_sigchld();
+#else
         ssize_t s = read(signal_fd, &fdsi, sizeof(struct signalfd_siginfo));
 
         if (s == sizeof(struct signalfd_siginfo))
@@ -789,6 +894,7 @@ main ( int argc, char **argv )
             if (fdsi.ssi_signo == SIGCHLD)
                 handle_sigchld();
         }
+#endif
 
         lo_server_recv_noblock( losrv, 500 );
 
