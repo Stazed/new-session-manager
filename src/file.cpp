@@ -26,7 +26,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+
+#if defined(__FreeBSD__)
+#include <sys/mount.h>
+#elif defined(__linux__)
 #include <sys/vfs.h>
+#endif
 
 unsigned long
 modification_time ( const char *file )
