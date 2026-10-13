@@ -361,7 +361,6 @@ public:
             return true;
         }
 
-
     void update ( lo_address to )
         {
             //Each send triggers one osc_update in the Proxy-GUI.
@@ -807,7 +806,7 @@ main ( int argc, char **argv )
         return 1;
     }
 #else
-     signal_fd = signalfd( -1, &mask, SFD_NONBLOCK );
+    signal_fd = signalfd( -1, &mask, SFD_NONBLOCK );
     if (signal_fd == -1)
     {
         perror("signalfd");
