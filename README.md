@@ -79,8 +79,7 @@ the source file docs/src/api/index.adoc is a derived work from NON-Session-Manag
 is licensed CC-By-Sa v2.5. Therefore our derived API document is also CC-By-Sa v2.5
 (see files docs/src/api/readme.txt and docs/src/api/LICENSE)
 
-
-## Build
+## Build meson
 The build system is meson.
 
 This is a software package that will compile and install multiple executables:
@@ -108,7 +107,20 @@ cd build && ninja
 sudo ninja install
 ```
 
-Optionally you can skip `sudo ninja install` and run all executables from the build-dir.
+## Build Cmake
+```
+mkdir build
+cd build
+cmake -DCMAKE_INSTALL_PREFIX=/usr ..
+#or disable individual build targets:
+cmake -DCMAKE_INSTALL_PREFIX=/usr -DNSM_LEGACY_GUI=OFF -DNSM_PROXY=OFF -DJACKPATCH=OFF ..
+make
+sudo make install
+#to uninstall:
+sudo make uninstall
+```
+
+Optionally you can skip `sudo ninja install` or `sudo make install` and run all executables from the build-dir.
 In this case you need to add the build-dir to your PATH environment variable so that the tools
 can find each other.
 
